@@ -20,7 +20,7 @@ FastBerry is blueprint to quickly start a web project with following attribute
 5. Tail logs of running stack `./cenv logs`
 6. Add new npm module `./cenv npm install <module name>`
 
-## TODO
+## Next Steps
 
 1. Add auth to api
 2. Add pagination to api
