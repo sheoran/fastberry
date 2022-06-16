@@ -1,0 +1,192 @@
+version: '3.8'
+
+services:
+  traefik:
+    image: ${PROJECT_PROXY_IMAGE:?PROJECT_PROXY_IMAGE}
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+    ports:
+      - "${PROJECT_PROXY_SERVICE_PORT:?PROJECT_PROXY_SERVICE_PORT}:80"
+      - "${PROJECT_PROXY_MANAGEMENT_PORT:?PROJECT_PROXY_MANAGEMENT_PORT}:8080"
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - default
+
+  db:
+    image: ${DB_SERVICE_IMAGE:?DB_SERVICE_IMAGE}
+    environment:
+      POSTGRES_USER: ${DB_SERVICE_USER:?DB_SERVICE_USER}
+      POSTGRES_PASSWORD: ${DB_SERVICE_PASSWORD:?DB_SERVICE_PASSWORD}
+      POSTGRES_DB: ${DB_SERVICE_DBNAME:?DB_SERVICE_DBNAME}
+    restart: always
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    expose:
+      - ${DB_SERVICE_PORT:?DB_SERVICE_PORT}
+    networks:
+      - default
+
+  dbadmin:
+    image: ${DBADMIN_SERVICE_IMAGE:?DBADMIN_SERVICE_IMAGE}
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${DBADMIN_SERVICE_USER:?DBADMIN_SERVICE_USER}
+      PGADMIN_DEFAULT_PASSWORD: ${DBADMIN_SERVICE_PASSWORD:?DBADMIN_SERVICE_PASSWORD}
+      PGADMIN_LISTEN_PORT: ${DBADMIN_SERVICE_PORT:?DBADMIN_SERVICE_PORT}
+    expose:
+      - "${DBADMIN_SERVICE_PORT:?DBADMIN_SERVICE_PORT}"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dbadmin.rule=Host(`dbadmin.${PROJECT_NETWORKNAME:?PROJECT_NETWORKNAME}.${PROJECT_PROXY_DOMAIN:?PROJECT_PROXY_DOMAIN}`)"
+      - "traefik.http.routers.dbadmin.entrypoints=web"
+      - "traefik.http.services.dbadmin.loadbalancer.server.port=${DBADMIN_SERVICE_PORT:?DBADMIN_SERVICE_PORT}"
+    restart: always
+    depends_on:
+      - traefik
+      - db
+    volumes:
+      - dbadmin_data:/var/lib/pgadmin
+    networks:
+      - default
+
+  ui:
+    image: ${PROJECT_IMAGE_PREFIX:?PROJECT_IMAGE_PREFIX}-${UI_SERVICE_IMAGE:?UI_SERVICE_IMAGE}
+    build: ./services/ui
+    command: npm start
+    expose:
+      - ${UI_SERVICE_DB_PORT:?UI_SERVICE_DB_PORT}
+    restart: always
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.app.rule=Host(`app.${PROJECT_NETWORKNAME:?PROJECT_NETWORKNAME}.${PROJECT_PROXY_DOMAIN:?PROJECT_PROXY_DOMAIN}`)"
+      - "traefik.http.routers.app.entrypoints=web"
+      - "traefik.http.services.app.loadbalancer.server.port=${UI_SERVICE_DB_PORT:?UI_SERVICE_DB_PORT}"
+    depends_on:
+      - api
+
+  api:
+    image: ${PROJECT_IMAGE_PREFIX:?PROJECT_IMAGE_PREFIX}-${API_SERVICE_IMAGE:?API_SERVICE_IMAGE}
+    build: ./services/api
+    environment:
+      &api_environment
+      - DEPLOYMENT_NAME=${DEPLOYMENT_NAME:?DEPLOYMENT_NAME}
+      - API_SERVICE_DB_NAME=${API_SERVICE_DB_NAME:?API_SERVICE_DB_NAME}
+      - API_SERVICE_DB_HOST=${API_SERVICE_DB_HOST:?API_SERVICE_DB_HOST}
+      - API_SERVICE_DB_PORT=${API_SERVICE_DB_PORT:?API_SERVICE_DB_PORT}
+      - API_SERVICE_DB_USER=${API_SERVICE_DB_USER:?API_SERVICE_DB_USER}
+      - API_SERVICE_DB_PASSWORD=${API_SERVICE_DB_PASSWORD:?API_SERVICE_DB_PASSWORD}
+      - API_SERVICE_DEFAULT_SUPERUSER_NAME=${API_SERVICE_DEFAULT_SUPERUSER_NAME:?API_SERVICE_DEFAULT_SUPERUSER_NAME}
+      - API_SERVICE_DEFAULT_SUPERUSER_PASSWORD=${API_SERVICE_DEFAULT_SUPERUSER_PASSWORD:?API_SERVICE_DEFAULT_SUPERUSER_PASSWORD}
+      - API_CELERY_TASK_ALWAYS_EAGER=${API_CELERY_TASK_ALWAYS_EAGER:?API_CELERY_TASK_ALWAYS_EAGER}
+      - API_CELERY_BROKER_URL=${API_CELERY_BROKER_URL:?API_CELERY_BROKER_URL}
+      - API_CELERY_RESULT_API=${API_CELERY_RESULT_API:?API_CELERY_RESULT_API}
+    command: poetry run uvicorn app.main:app --host 0.0.0.0 --port ${API_SERVICE_PORT:?API_SERVICE_PORT} --reload
+    expose:
+      - ${API_SERVICE_PORT:?API_SERVICE_PORT}
+    restart: always
+    depends_on:
+      - traefik
+      - db
+      - redis
+      - rabbit
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.api.rule=Host(`api.${PROJECT_NETWORKNAME:?PROJECT_NETWORKNAME}.${PROJECT_PROXY_DOMAIN:?PROJECT_PROXY_DOMAIN}`)"
+      - "traefik.http.routers.api.entrypoints=web"
+      - "traefik.http.services.api.loadbalancer.server.port=${API_SERVICE_PORT:?API_SERVICE_PORT}"
+    networks:
+      - default
+
+  celery-beat:
+    image: ${PROJECT_IMAGE_PREFIX:?PROJECT_IMAGE_PREFIX}-${API_SERVICE_IMAGE:?API_SERVICE_IMAGE}
+    command: poetry run celery -A app.core beat -l INFO
+    environment: *api_environment
+    restart: always
+    depends_on:
+      - db
+      - redis
+      - rabbit
+    networks:
+      - default
+
+  celery-worker:
+    image: ${PROJECT_IMAGE_PREFIX:?PROJECT_IMAGE_PREFIX}-${API_SERVICE_IMAGE:?API_SERVICE_IMAGE}
+    command: poetry run celery -A app.core worker -n celery-worker -l INFO -Ofair --events --concurrency=${API_CELERY_WORKER_CONCURRENCY:?API_CELERY_WORKER_CONCURRENCY}
+    restart: always
+    environment: *api_environment
+    depends_on:
+      - db
+      - redis
+      - rabbit
+    networks:
+      - default
+
+  celery-flower:
+    image: ${API_CELERY_FLOWER_IMAGE:?API_CELERY_FLOWER_IMAGE}
+    command: flower --broker=${API_CELERY_BROKER_URL:?API_CELERY_BROKER_URL}
+    expose:
+      - "${API_CELERY_FLOWER_SERVICE_PORT:?API_CELERY_FLOWER_SERVICE_PORT}"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.celery-flower.rule=Host(`celery-flower.${PROJECT_NETWORKNAME:?PROJECT_NETWORKNAME}.${PROJECT_PROXY_DOMAIN:?PROJECT_PROXY_DOMAIN}`)"
+      - "traefik.http.routers.celery-flower.entrypoints=web"
+      - "traefik.http.services.celery-flower.loadbalancer.server.port=${API_CELERY_FLOWER_SERVICE_PORT:?API_CELERY_FLOWER_SERVICE_PORT}"
+    restart: always
+    depends_on:
+      - redis
+      - rabbit
+    networks:
+      - default
+
+  redis:
+    image: ${API_REDIS_IMAGE:?API_REDIS_IMAGE}
+    command: redis-server --appendonly yes
+    expose:
+      - "${API_REDIS_IMAGE_SERVICE_PORT:?API_REDIS_IMAGE_SERVICE_PORT}"
+    restart: always
+    volumes:
+      - redis_data:/data
+    networks:
+      - default
+
+  rabbit:
+    image: ${API_RABBIT_IMAGE:?API_RABBIT_IMAGE}
+    environment:
+      RABBITMQ_DEFAULT_USER: ${API_RABBITMQ_USER:?API_RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${API_RABBITMQ_PASSWORD:?API_RABBITMQ_PASSWORD}
+    expose:
+      - "${API_RABBITMQ_SERVICE_PORT:?API_RABBITMQ_SERVICE_PORT}"
+      - "${API_RABBITMQ_ADMIN_SERVICE_PORT:?API_RABBITMQ_ADMIN_SERVICE_PORT}"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.rabbit-ui.rule=Host(`rabbitadmin.${PROJECT_NETWORKNAME:?PROJECT_NETWORKNAME}.${PROJECT_PROXY_DOMAIN:?PROJECT_PROXY_DOMAIN}`)"
+      - "traefik.http.routers.rabbit-ui.entrypoints=web"
+      - "traefik.http.services.rabbit-ui.loadbalancer.server.port=${API_RABBITMQ_ADMIN_SERVICE_PORT:?API_RABBITMQ_ADMIN_SERVICE_PORT}"
+    restart: always
+    volumes:
+      - rabbit_data:/var/lib/rabbitmq
+    networks:
+      - default
+
+networks:
+  default:
+    driver: bridge
+    name: ${PROJECT_NETWORKNAME:?PROJECT_NETWORKNAME}
+
+volumes:
+  db_data:
+    driver: local
+    name: ${PROJECT_NETWORKNAME:?PROJECT_NETWORKNAME}__db_data
+  dbadmin_data:
+    driver: local
+    name: ${PROJECT_NETWORKNAME:?PROJECT_NETWORKNAME}__dbadmin_data
+  redis_data:
+    driver: local
+    name: ${PROJECT_NETWORKNAME:?PROJECT_NETWORKNAME}__redis_data
+  rabbit_data:
+    driver: local
+    name: ${PROJECT_NETWORKNAME:?PROJECT_NETWORKNAME}__rabbit_data

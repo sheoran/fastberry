@@ -1,0 +1,18 @@
+globals:
+  COMPOSE_PROJECT_NAME: fastberry # should only be changed if multiple instances of projects are required on same docker host
+  PROJECT_IMAGE_PREFIX: artifactory/fastberry
+  PROJECT_NETWORKNAME: fastberry
+  DEPLOYMENT_TYPE: production
+  PROJECT_PROXY_IMAGE: traefik:v2.7.0
+  PROJECT_PROXY_MANAGEMENT_PORT: 8080
+  PROJECT_PROXY_SERVICE_PORT: 80
+contexts:
+  - DEPLOYMENT_NAME: dev
+    PROJECT_NETWORKNAME: dev
+    DEPLOYMENT_TYPE: dev
+  - DEPLOYMENT_NAME: stage
+    PROJECT_NETWORKNAME: stage
+    DEPLOYMENT_TYPE: production
+  - DEPLOYMENT_NAME: prod
+    PROJECT_NETWORKNAME: prod
+    DEPLOYMENT_TYPE: production

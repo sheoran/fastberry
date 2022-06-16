@@ -1,0 +1,646 @@
+#!/usr/bin/env python3
+"""Cenv utility to advance the developer and devops experience in a unified way."""
+
+import contextlib
+import copy
+import os
+import platform
+import sys
+import subprocess
+import getpass
+from os.path import expanduser
+import shlex
+
+BASE_DIR = os.path.abspath(os.path.dirname(f"{os.path.abspath(__file__)}/../"))
+DEPLOYMENT_TYPES = {"development", "production"}
+PLATFORM = platform.platform()
+PLATFORM_SYSTEM = platform.system()
+PLATFORM_RELEASE = platform.release()
+USER_HOME = expanduser("~")
+CENV_VENV = f"{USER_HOME}/.venv/cenv_python"
+CENV_VENV_PYTHON = f"{CENV_VENV}/bin/python3"
+
+
+def run_and_print(command, rc=0):
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, shell=True)
+    print("=" * 79)
+    print(f"cmd: {command}")
+    while True:
+        output = process.stdout.readline()
+        if output == b"" and process.poll() is not None:
+            break
+        if output:
+            print(f"\t{output.decode().strip()}")
+    _rtc = process.poll()
+    if _rtc:
+        assert rc == _rtc, f"Return code {_rtc}"
+    print("-" * 79)
+    return _rtc
+
+
+def run_and_get(command, rc=0):
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, shell=True)
+    _rtc = process.poll()
+    if _rtc:
+        assert rc == _rtc, f"Return code {_rtc}"
+    return [i.strip().decode() for i in process.stdout.readlines()]
+
+
+def configure_linux():
+    if not os.path.exists(CENV_VENV):
+        print("*" * 79)
+        print(f"Creating virtual env for cenv at {CENV_VENV}")
+        run_and_print(f"python3 -m venv {CENV_VENV}")
+        run_and_print(f"{CENV_VENV_PYTHON} -m pip install pip==21.3.1")
+        print("*" * 79)
+
+    required_pips = [
+        "pyaml==21.10.1",
+        "docker-compose==1.29.2",
+        "plumbum==1.6.9",
+        "click==8.0.4",
+        "poetry",
+    ]
+
+    for rp in required_pips:
+        if not run_and_get(f"{CENV_VENV_PYTHON} -m pip show {rp.split('=')[0]}"):
+            print("*" * 79)
+            print(f"!!!Installing {rp}!!!")
+            run_and_print(f"{CENV_VENV_PYTHON} -m pip install {rp}")
+            print(f"!!!Installed {rp}!!!")
+            print("*" * 79)
+
+    if not run_and_get("which docker"):
+        run_and_print(
+            "cd /tmp && curl -fsSL https://get.docker.com -o get-docker.sh && sudo sh get-docker.sh"
+        )
+        run_and_print("sudo usermod -aG docker {0}".format(getpass.getuser()))
+
+        print("*" * 79)
+        print("!!!Logout from your current shell and login back to continue....!!!")
+        print("*" * 79)
+        exit(-1)
+
+
+def configure_mac():
+    if not os.path.exists(CENV_VENV):
+        print("*" * 79)
+        print(f"Creating virtual env for cenv at {CENV_VENV}")
+        run_and_print(f"python3 -m venv {CENV_VENV}")
+        run_and_print(f"{CENV_VENV_PYTHON} -m pip install pip==21.3.1")
+        print("*" * 79)
+
+    required_pips = [
+        "pyaml==21.10.1",
+        "docker-compose==1.29.2",
+        "plumbum==1.6.9",
+        "click==8.0.4",
+        "poetry",
+    ]
+
+    for rp in required_pips:
+        if not run_and_get(f"{CENV_VENV_PYTHON} -m pip show {rp.split('=')[0]}"):
+            print("*" * 79)
+            print(f"!!!Installing {rp}!!!")
+            run_and_print(f"{CENV_VENV_PYTHON} -m pip install {rp}")
+            print(f"!!!Installed {rp}!!!")
+            print("*" * 79)
+
+    if not run_and_get("brew list --cask | grep {0}".format("docker")):
+        print("*" * 79)
+        print("!!!Installing {0}!!!".format("docker"))
+        run_and_print("brew install --cask {0}".format("docker"))
+        run_and_print("open -a Docker")
+        print("!!!Installed {0}!!!".format("docker"))
+        print(
+            "!!!Docker is starting, make sure its running before running things again....!!!"
+        )
+        print("*" * 79)
+        exit(-1)
+
+
+def env_setup():
+    if PLATFORM_SYSTEM == "Linux":
+        configure_linux()
+    elif PLATFORM_SYSTEM == "Darwin":
+        configure_mac()
+    else:
+        print("*" * 79)
+        print("!!!Unsupported OS found, please improve the script....!!!")
+        print("*" * 79)
+        exit(-1)
+
+
+# =================================================================
+# Undesired but nessary black magic
+# =================================================================
+# Configure host if its missing anything
+if not os.path.exists(CENV_VENV):
+    env_setup()
+
+if sys.executable != CENV_VENV_PYTHON:
+    # Run rest of script via dedicated virtual env
+    exit(
+        os.system(
+            f"{CENV_VENV_PYTHON} {' '.join(shlex.quote(arg) for arg in sys.argv)}"
+        )
+    )
+# =================================================================
+
+# =================================================================
+# Other imports statements which depends on env_setup run
+# Most of this part will be executed by the python created by above
+# code
+# =================================================================
+import click  # noqa isort:skip fmt: off
+import plumbum  # noqa isort:skip fmt: off
+import yaml  # noqa isort:skip fmt: off
+import json  # noqa isort:skip fmt: off
+
+if json.loads(os.environ.get("IN_CENV_CONTAINER", "false")):
+    click.secho("\tError!!!! Running in nested container env not supported", fg="red")
+    exit(-1)
+
+
+def get_default_interface():
+    interface = run_and_get("/sbin/route -n | grep '^0.0.0.0' | awk '{print $8}'")[0]
+    if not interface:
+        raise RuntimeError("Can not find interface name")
+    if type(interface) == bytes:
+        return interface.decode()
+    return interface
+
+
+def get_host_ipv4_on_interface(interface):
+    ipv4 = None
+    if PLATFORM_SYSTEM == "Linux":
+        ipv4 = run_and_get(
+            f"/sbin/ifconfig {interface} | grep -i Mask| awk '{{print $2}}' | awk -F: '{{print $2}}'"
+        )[0]
+        if not ipv4:
+            ipv4 = run_and_get(
+                f"/sbin/ifconfig {interface} | grep -i Mask| awk '{{print $2}}'"
+            )[0]
+
+    if not ipv4:
+        raise RuntimeError(f"Can not find ipv4 for interface {interface}")
+    if type(ipv4) == bytes:
+        return ipv4.decode()
+    return ipv4
+
+
+def update_env_config(project, env_config):
+    env_config = copy.deepcopy(env_config)
+    assert (
+        env_config["DEPLOYMENT_TYPE"] in DEPLOYMENT_TYPES
+    ), f"Not Supported development type {DEPLOYMENT_TYPES}"
+
+    if env_config["COMPOSE_PROJECT_NAME"] is None:
+        env_config["COMPOSE_PROJECT_NAME"] = project.split("/")[-1]
+
+    if env_config["PROJECT_PROXY_DOMAIN"] is None:
+        _ppd = None
+        if PLATFORM_SYSTEM == "Darwin":
+            _ppd = "127.0.0.1.nip.io"
+        else:
+            _ppd = f"{get_host_ipv4_on_interface(get_default_interface())}.nip.io"
+        env_config["PROJECT_PROXY_DOMAIN"] = _ppd.lower()
+
+    if env_config["PROJECT_IMAGE_PREFIX"] is None:
+        env_config["PROJECT_IMAGE_PREFIX"] = (
+            os.uname()[1] + "/" + os.path.split(BASE_DIR)[1]
+        )
+
+    return env_config
+
+
+def env_generator(
+    project, env_template_override=None, env_template_override_context=None
+):
+    env_template_file = f"{project}/env_template.yaml"
+    if env_template_override is None:
+        env_template_override_file = f"{project}/env_template_override.yaml"
+    else:
+        env_template_override_file = env_template_override
+
+    env_file = "{0}/.env".format(project)
+    env_config = yaml.safe_load(open(env_template_file))
+    if os.path.exists(env_template_override_file):
+        env_config_override = yaml.safe_load(open(env_template_override_file))
+        if env_config_override:
+            if env_template_override_context:
+                assert (
+                    "contexts" in env_config_override
+                ), "Env template file missing context"
+                for _context in env_config_override["contexts"]:
+                    if "globals" in env_config_override:
+                        env_config.update(env_config_override["globals"])
+                    if _context["DEPLOYMENT_NAME"] == env_template_override_context:
+                        env_config.update(_context)
+                        break
+            else:
+                env_config.update(env_config_override)
+
+    env_config = update_env_config(project, env_config)
+    with open(env_file, "w") as f:
+        f.write("# Auto-generated by env_generator\n")
+        for k, v in env_config.items():
+            f.write("{0}={1}\n".format(k, v))
+
+    return env_config
+
+
+@contextlib.contextmanager
+def chdir(go2dir):
+    curdir = os.getcwd()
+    try:
+        os.chdir(go2dir)
+        yield
+    finally:
+        os.chdir(curdir)
+
+
+def context_iterator(ctx):
+    """
+    Helps iterate over contexts in config files, nested call to various functions using this context
+    won't lead to multiple iterations. This behavior avoid infinite loops.
+
+    Why its needed ?
+     This support is desired as each cli can iter over entire context or call each other in the context.
+    """
+    project = ctx.obj["project"]
+    with chdir(project):
+        env_template_override_contexts = ctx.obj["env_template_override_contexts"]
+        if env_template_override_contexts:
+            ctx.obj["env_template_override_contexts"] = None
+            env_config_override = env_generator(
+                ctx.obj["project"],
+                env_template_override=ctx.obj["env_template_override"],
+            )
+            assert (
+                "contexts" in env_config_override
+            ), "Env template file missing contexts"
+            env_template_override_contexts = set(
+                [i.strip() for i in env_template_override_contexts.split(",")]
+            )
+            # In future we can relax key required to find context
+            for _context in env_config_override["contexts"]:
+                if (
+                    _context["DEPLOYMENT_NAME"] not in env_template_override_contexts
+                    and "all" not in env_template_override_contexts
+                ):
+                    continue
+                ctx.obj["env_template_override_context"] = _context["DEPLOYMENT_NAME"]
+                yield ctx
+        else:
+            if "env_template_override_context" in ctx.obj:
+                yield ctx
+            else:
+                ctx.obj["env_template_override_context"] = None
+                yield ctx
+
+
+# =================================================================
+# Cli and click related
+# =================================================================
+@click.group()
+@click.option(
+    "--project", default=BASE_DIR, required=False, help="Project directory path"
+)
+@click.option(
+    "--env_template_override",
+    default="{0}/env_template_override.yaml".format(BASE_DIR),
+    required=False,
+    type=click.Path(exists=False),
+    help="Env template override",
+)
+@click.option(
+    "--env_template_override_contexts",
+    default=None,
+    required=False,
+    type=click.STRING,
+    help="Env template have many context(s), consume specific context(s). Use 'all' to run on every context(s) in env_template",
+)
+@click.pass_context
+def cli(ctx, **params):
+    ctx.obj = params
+
+
+@click.command(
+    add_help_option=False,
+    context_settings={
+        "ignore_unknown_options": True,
+    },
+)
+@click.argument("cmd", nargs=-1)
+@click.pass_context
+def compose(ctx, **params):
+    "Docker compose cli support"
+    for ctx in context_iterator(ctx):
+        env_vars = env_generator(
+            ctx.obj["project"],
+            ctx.obj["env_template_override"],
+            ctx.obj["env_template_override_context"],
+        )
+        if env_vars["DEPLOYMENT_TYPE"] == "development":
+            env_vars["COMPOSE_FILE"] = "compose.yaml:compose-development.yaml"
+
+        cmd = plumbum.local["docker-compose"].setenv(**env_vars)
+        args = params["cmd"]
+        cmd.__getitem__(args) & plumbum.TF([0], FG=True)
+
+
+@click.command(
+    add_help_option=False,
+    context_settings={
+        "ignore_unknown_options": True,
+    },
+)
+@click.argument("cmd", nargs=-1)
+@click.pass_context
+def info(ctx, **params):
+    """
+    Print Stack Service Info
+    """
+    for ctx in context_iterator(ctx):
+        env_vars = env_generator(
+            ctx.obj["project"],
+            ctx.obj["env_template_override"],
+            ctx.obj["env_template_override_context"],
+        )
+        service_map = [
+            dict(
+                name="UI",
+                username="-",
+                password="-"
+                if env_vars.get("DEPLOYMENT_TYPE") != "production"
+                else "*******",
+                url="http://app.{PROJECT_NETWORKNAME}.{PROJECT_PROXY_DOMAIN}{PROJECT_PROXY_SERVICE_PORT}".format(
+                    PROJECT_NETWORKNAME=env_vars.get("PROJECT_NETWORKNAME"),
+                    PROJECT_PROXY_DOMAIN=env_vars.get("PROJECT_PROXY_DOMAIN"),
+                    PROJECT_PROXY_SERVICE_PORT=""
+                    if env_vars.get("PROJECT_PROXY_SERVICE_PORT") == "80"
+                    else ":{0}".format(env_vars.get("PROJECT_PROXY_SERVICE_PORT")),
+                ),
+            ),
+            dict(
+                name="API",
+                username=env_vars.get("API_SERVICE_DEFAULT_SUPERUSER_NAME"),
+                password=env_vars.get("API_SERVICE_DEFAULT_SUPERUSER_PASSWORD")
+                if env_vars.get("DEPLOYMENT_TYPE") != "production"
+                else "*******",
+                url="http://api.{PROJECT_NETWORKNAME}.{PROJECT_PROXY_DOMAIN}{PROJECT_PROXY_SERVICE_PORT}/graphql".format(
+                    PROJECT_NETWORKNAME=env_vars.get("PROJECT_NETWORKNAME"),
+                    PROJECT_PROXY_DOMAIN=env_vars.get("PROJECT_PROXY_DOMAIN"),
+                    PROJECT_PROXY_SERVICE_PORT=""
+                    if env_vars.get("PROJECT_PROXY_SERVICE_PORT") == "80"
+                    else ":{0}".format(env_vars.get("PROJECT_PROXY_SERVICE_PORT")),
+                ),
+            ),
+            dict(
+                name="DbAdmin",
+                username=env_vars.get("DBADMIN_SERVICE_USER"),
+                password=env_vars.get("DBADMIN_SERVICE_PASSWORD")
+                if env_vars.get("DEPLOYMENT_TYPE") != "production"
+                else "*******",
+                url="http://dbadmin.{PROJECT_NETWORKNAME}.{PROJECT_PROXY_DOMAIN}{PROJECT_PROXY_SERVICE_PORT}".format(
+                    PROJECT_NETWORKNAME=env_vars.get("PROJECT_NETWORKNAME"),
+                    PROJECT_PROXY_DOMAIN=env_vars.get("PROJECT_PROXY_DOMAIN"),
+                    PROJECT_PROXY_SERVICE_PORT=""
+                    if env_vars.get("PROJECT_PROXY_SERVICE_PORT") == "80"
+                    else ":{0}".format(env_vars.get("PROJECT_PROXY_SERVICE_PORT")),
+                ),
+            ),
+            dict(
+                name="RabbitAdmin",
+                username=env_vars.get("API_RABBITMQ_USER")
+                if env_vars.get("DEPLOYMENT_TYPE") != "production"
+                else "*******",
+                password=env_vars.get("API_RABBITMQ_PASSWORD")
+                if env_vars.get("DEPLOYMENT_TYPE") != "production"
+                else "*******",
+                url="http://rabbitadmin.{PROJECT_NETWORKNAME}.{PROJECT_PROXY_DOMAIN}{PROJECT_PROXY_SERVICE_PORT}".format(
+                    PROJECT_NETWORKNAME=env_vars.get("PROJECT_NETWORKNAME"),
+                    PROJECT_PROXY_DOMAIN=env_vars.get("PROJECT_PROXY_DOMAIN"),
+                    PROJECT_PROXY_SERVICE_PORT=""
+                    if env_vars.get("PROJECT_PROXY_SERVICE_PORT") == "80"
+                    else ":{0}".format(env_vars.get("PROJECT_PROXY_SERVICE_PORT")),
+                ),
+            ),
+            dict(
+                name="CeleryFlower",
+                username="-"
+                if env_vars.get("DEPLOYMENT_TYPE") != "production"
+                else "*******",
+                password="-"
+                if env_vars.get("DEPLOYMENT_TYPE") != "production"
+                else "*******",
+                url="http://celery-flower.{PROJECT_NETWORKNAME}.{PROJECT_PROXY_DOMAIN}{PROJECT_PROXY_SERVICE_PORT}".format(
+                    PROJECT_NETWORKNAME=env_vars.get("PROJECT_NETWORKNAME"),
+                    PROJECT_PROXY_DOMAIN=env_vars.get("PROJECT_PROXY_DOMAIN"),
+                    PROJECT_PROXY_SERVICE_PORT=""
+                    if env_vars.get("PROJECT_PROXY_SERVICE_PORT") == "80"
+                    else ":{0}".format(env_vars.get("PROJECT_PROXY_SERVICE_PORT")),
+                ),
+            ),
+        ]
+        click.secho("*" * 79, fg="yellow")
+        for service in service_map:
+            click.secho(
+                " Service {name} User: {username} Password: {password} at {url}".format(
+                    **service
+                ),
+                fg="green",
+            )
+        click.secho("*" * 79, fg="yellow")
+
+
+@click.command(
+    add_help_option=False,
+    context_settings={
+        "ignore_unknown_options": True,
+    },
+)
+@click.argument("cmd", nargs=-1)
+@click.pass_context
+def poetry(ctx, **params):
+    "Poetry cli support"
+    project = ctx.obj["project"] + "/services/api/app"
+    for ctx in context_iterator(ctx):
+        env_vars = env_generator(
+            ctx.obj["project"],
+            ctx.obj["env_template_override"],
+            ctx.obj["env_template_override_context"],
+        )
+        cmd = plumbum.local["bash"].setenv(**env_vars)
+        args = [
+            "-c",
+            f"cd {project} && {CENV_VENV}/bin/poetry {' '.join(shlex.quote(arg) for arg in params['cmd'])}",
+        ]
+        cmd.__getitem__(args) & plumbum.TF([0], FG=True)
+
+
+@click.command(
+    add_help_option=False,
+    context_settings={
+        "ignore_unknown_options": True,
+    },
+)
+@click.argument("cmd", nargs=-1)
+@click.pass_context
+def npm(ctx, **params):
+    "Npm cli support"
+    project = ctx.obj["project"] + "/services/ui/app"
+    for ctx in context_iterator(ctx):
+        env_vars = env_generator(
+            ctx.obj["project"],
+            ctx.obj["env_template_override"],
+            ctx.obj["env_template_override_context"],
+        )
+        cmd = plumbum.local["bash"].setenv(**env_vars)
+        args = [
+            "-c",
+            f"cd {project} && npm {' '.join(shlex.quote(arg) for arg in params['cmd'])}",
+        ]
+        cmd.__getitem__(args) & plumbum.TF([0], FG=True)
+
+
+@click.command(
+    add_help_option=False,
+    context_settings={
+        "ignore_unknown_options": True,
+    },
+)
+@click.argument("cmd", nargs=-1)
+@click.pass_context
+def alembic(ctx, **params):
+    "Alembic cli support"
+    # Running local causes a db connection issue
+    # Instead run in docker network
+    params["cmd"] = [
+        "run",
+        "--rm",
+        "api",
+        "bash",
+        "-c",
+        f"cd /app && poetry run alembic {' '.join(shlex.quote(arg) for arg in params['cmd'])}",
+    ]
+    ctx.invoke(compose, **params)
+
+
+@click.command(
+    add_help_option=False,
+    context_settings={
+        "ignore_unknown_options": True,
+    },
+)
+@click.argument("cmd", nargs=-1)
+@click.pass_context
+def build(ctx, **params):
+    "Build stack images"
+    if params["cmd"]:
+        params["cmd"] = ["build"] + list(params["cmd"])
+    else:
+        params["cmd"] = ["build"]
+    ctx.invoke(compose, **params)
+
+
+@click.command()
+@click.option(
+    "--nuke",
+    is_flag=True,
+    help="Nuke everything including downloaded images, should be used as last option",
+)
+@click.pass_context
+def clean(ctx, **params):
+    "Clean stack"
+    params["cmd"] = ["down", "-v", "-t", "0"]
+    ctx.invoke(compose, **params)
+
+    if params["nuke"]:
+        plumbum.local["bash"][
+            "-c", "docker ps -aq | xargs -n1 docker rm -f"
+        ] & plumbum.TF([0], FG=True)
+        plumbum.local["bash"][
+            "-c", "docker volume ls -q | xargs -n1 docker volume rm"
+        ] & plumbum.TF([0], FG=True)
+        plumbum.local["bash"]["-c", "docker system prune -a -f"] & plumbum.TF(
+            [0], FG=True
+        )
+
+
+@click.command()
+@click.pass_context
+def deploy(ctx, **params):
+    "Deploy stack"
+    # start database
+    params["cmd"] = ["up", "-d", "db"]
+    ctx.invoke(compose, **params)
+
+    # init and upgrade database if needed
+    params["cmd"] = [
+        "run",
+        "--rm",
+        "api",
+        "bash",
+        "-c",
+        "cd /app && poetry run alembic upgrade head && poetry run python bin/prepare_db.py",
+    ]
+    ctx.invoke(compose, **params)
+
+    # start all other needed services
+    params["cmd"] = ["up", "-d"]
+    ctx.invoke(compose, **params)
+    ctx.invoke(info, **params)
+
+
+@click.command(
+    add_help_option=False,
+    context_settings={
+        "ignore_unknown_options": True,
+    },
+)
+@click.argument("cmd", nargs=-1)
+@click.pass_context
+def logs(ctx, **params):
+    "Stack logs"
+    if params["cmd"]:
+        params["cmd"] = ["logs"] + list(params["cmd"])
+    else:
+        params["cmd"] = ["logs", "--tail", 50, "-f"]
+    ctx.invoke(compose, **params)
+
+
+@click.command(
+    add_help_option=False,
+    context_settings={
+        "ignore_unknown_options": True,
+    },
+)
+@click.argument("cmd", nargs=-1)
+@click.pass_context
+def lint(ctx, **params):
+    "Auto format and lint codebase"
+    params["cmd"] = ["run", "black", "."]
+    ctx.invoke(poetry, **params)
+
+    params["cmd"] = ["run", "flake8", "."]
+    ctx.invoke(poetry, **params)
+
+
+# ###########################################################
+# Register cli's
+# ###########################################################
+cli.add_command(compose)
+cli.add_command(info)
+cli.add_command(poetry)
+cli.add_command(npm)
+cli.add_command(alembic)
+cli.add_command(build)
+cli.add_command(clean)
+cli.add_command(deploy)
+cli.add_command(logs)
+cli.add_command(lint)
+
+cli()
+exit(0)

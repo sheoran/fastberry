@@ -1,0 +1,68 @@
+# ############################################################################
+# Global Configs
+COMPOSE_PROJECT_NAME: fastberry # should only be changed if multiple instances of projects are required on same docker host
+PROJECT_IMAGE_PREFIX: localhost/fastberry
+PROJECT_NETWORKNAME: fastberry
+DEPLOYMENT_TYPE: development # choose development || production
+DEPLOYMENT_NAME: fastberry-dev
+
+# ############################################################################
+# Reverse Proxy
+PROJECT_PROXY_DOMAIN: # If empty computed and set to <ip>.nip.io
+PROJECT_PROXY_IMAGE: traefik:v2.7.0
+PROJECT_PROXY_MANAGEMENT_PORT: 8080
+PROJECT_PROXY_SERVICE_PORT: 80
+
+# ############################################################################
+# DB SERVICE
+DB_SERVICE_IMAGE: postgres:14.3
+DB_SERVICE_PORT: 5432
+DB_SERVICE_DBNAME: fastberry
+DB_SERVICE_USER: dev
+DB_SERVICE_PASSWORD: nopass
+
+# ############################################################################
+# DBADMIN SERVICE
+DBADMIN_SERVICE_IMAGE: dpage/pgadmin4:6.10
+DBADMIN_SERVICE_PORT: 80
+DBADMIN_SERVICE_USER: dev@localhost.com
+DBADMIN_SERVICE_PASSWORD: nopass
+
+# ############################################################################
+# UI SERVICE
+UI_SERVICE_IMAGE: fastberry-ui
+UI_SERVICE_DB_PORT: 3000
+
+# ############################################################################
+# API SERVICE
+API_SERVICE_IMAGE: fastberry-api
+API_SERVICE_PORT: 8000
+API_SERVICE_DB_NAME: fastberry
+API_SERVICE_DB_HOST: db
+API_SERVICE_DB_PORT: 5432
+API_SERVICE_DB_USER: dev
+API_SERVICE_DB_PASSWORD: nopass
+API_SERVICE_DEFAULT_SUPERUSER_NAME: dev@localhost.com
+API_SERVICE_DEFAULT_SUPERUSER_PASSWORD: nopass
+
+# ############################################################################
+# API CELERY SERVICE
+API_CELERY_BROKER_URL: amqp://dev:nopass@rabbit:5672/
+API_CELERY_RESULT_API: redis://redis:6379/0
+API_CELERY_WORKER_CONCURRENCY: 5
+API_CELERY_TASK_ALWAYS_EAGER: False
+API_CELERY_FLOWER_IMAGE: mher/flower:0.9.7
+API_CELERY_FLOWER_SERVICE_PORT: 5555
+
+# ############################################################################
+# API REDIS SERVICE
+API_REDIS_IMAGE: redis:7.0.2-alpine
+API_REDIS_IMAGE_SERVICE_PORT: 6379
+
+# ############################################################################
+# API RABBIT SERVICE
+API_RABBIT_IMAGE: rabbitmq:3.10.5-management-alpine
+API_RABBITMQ_USER: dev
+API_RABBITMQ_PASSWORD: nopass
+API_RABBITMQ_SERVICE_PORT: 5672
+API_RABBITMQ_ADMIN_SERVICE_PORT: 15672

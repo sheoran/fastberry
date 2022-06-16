@@ -1,0 +1,33 @@
+version: "3.8"
+
+services:
+  ui:
+    volumes:
+      - ui_data:/app
+
+  api:
+    volumes:
+      - api_data:/app
+
+  celery-beat:
+    volumes:
+      - api_data:/app
+
+  celery-worker:
+    volumes:
+      - api_data:/app
+
+volumes:
+  api_data:
+    driver: local
+    driver_opts:
+      o: bind
+      type: none
+      device: ./services/api/app
+
+  ui_data:
+    driver: local
+    driver_opts:
+      o: bind
+      type: none
+      device: ./services/ui/app

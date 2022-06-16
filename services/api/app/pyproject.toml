@@ -1,0 +1,67 @@
+[tool.poetry]
+name = "app"
+version = "0.1.0"
+description = ""
+authors = ["VCDR TEAM"]
+
+[tool.poetry.dependencies]
+python = "^3.8"
+alembic = "1.7.7"
+asgiref = "3.5.2"
+asyncpg = "0.25.0"
+celery = "^5.2.7"
+click = "8.1.3"
+email-validator = "^1.2.1"
+fastapi = "0.78.0"
+graphql-core = "3.2.1"
+httptools = "0.4.0"
+importlib-metadata = "4.11.4"
+importlib-resources = "5.7.1"
+passlib = {extras = ["bcrypt"], version = "^1.7.2"}
+psycopg2-binary = "^2.9.3"
+pydantic = "^1.9.1"
+python-dateutil = "2.8.2"
+python-dotenv = "0.20.0"
+python-jose = {extras = ["cryptography"], version = "^3.1.0"}
+python-multipart = "0.0.5"
+PyYAML = "6.0"
+SQLAlchemy = "1.4.36"
+sqlmodel = "0.0.6"
+strawberry_sqlalchemy = "0.1.5"
+strawberry-graphql = "0.114.0"
+tenacity = "^6.1.0"
+uvicorn = "0.17.6"
+uvloop = "0.16.0"
+websockets = "10.3"
+zipp = "3.8.0"
+redis = "^4.3.3"
+
+
+[tool.poetry.dev-dependencies]
+black = "^22.3.0"
+ipython = "^8.4.0"
+ipdb = "^0.13.9"
+isort = "^5.10.1"
+autoflake = "^1.4"
+flake8 = "^4.0.1"
+pytest = "^7.1.2"
+sqlalchemy-stubs = "^0.4"
+
+[tool.isort]
+multi_line_output = 3
+include_trailing_comma = true
+force_grid_wrap = 0
+line_length = 88
+
+[tool.black]
+line-length = 99
+extend-exclude = '''
+/(
+  # The following are specific to project
+  alembic
+)/
+'''
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-api = "poetry.core.masonry.api"
